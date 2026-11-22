@@ -12,10 +12,11 @@ Requires Python 3.11 or later. The portable mode uses only the Python standard l
 python translator.py --list
 python translator.py portable_example.py --to javascript -o translated.js
 node translated.js
+python translator.py portable_example.py -o translated.ts
 python translator.py portable_example.py --mode portable --to c --to ruby
 ~~~
 
-The translator infers the source language from the file extension. Use `--from` to override it. Repeat `--to` to generate multiple outputs. Use `-o` to name the output file when selecting a single target language.
+The translator infers the source language from the file extension. Use `--from` to override it. Repeat `--to` to generate multiple outputs. With `-o` and a recognized extension, the extension selects the target unless `--to` is specified. If you supply neither option, Python input defaults to C++.
 
 ## Translation modes
 
@@ -30,8 +31,9 @@ To build C++ output that uses CPython, run `python build_cpp.py translated.cpp`.
 
 ## Supported profile
 
-The shared core handles individual files with scalar functions, variables, conditionals, loops, and console output. It supports `int32` integers, booleans, and strings. Capabilities vary by language pair. Arrays, asynchronous code, floating-point arithmetic, and external libraries are outside the shared profile. Diagnostics include a source position when available.
+The shared core handles individual files with scalar functions, variables, conditionals, loops, and console output. It supports `int32` integers, booleans, and strings. Capabilities vary by language pair. General collections, asynchronous code, floating-point arithmetic, and external libraries are outside the shared profile. Diagnostics include a source position when available.
 
+- Python functions in the same file support keyword arguments and scalar defaults. Python integer lists support literals, aliases, `append`, returning a list, and printing to JavaScript, TypeScript, Ruby, Java, and C#. List indexing, slicing, and comprehensions are outside this profile.
 - SQLite supports scalar `SELECT` expressions without database table references.
 - NASM accepts straight-line arithmetic on 32-bit registers. To build the generated Linux x86-64 program, run `nasm -f elf64 translated.asm`, followed by `cc translated.o -o translated`.
 

@@ -43,6 +43,7 @@ class PythonParser:
     def __init__(self):
         self.ranges = 0
         self.assignments = 0
+        self.signatures: dict[str, ast.arguments] = {}
 
     @staticmethod
     def at(node: ast.AST) -> ir.Position:
@@ -60,6 +61,9 @@ class PythonParser:
             return "void"
         if isinstance(node, ast.Name) and node.id in {"bool", "int", "str"}:
             return node.id
+        if (isinstance(node, ast.Subscript) and isinstance(node.value, ast.Name) and node.value.id == "list"
+                and isinstance(node.slice, ast.Name) and node.slice.id == "int"):
+            return "int_list"
         supported = "int, bool, str, None" if result else "int, bool, str"
         raise self.at(node).error(f"supported Python annotations: {supported}")
 
@@ -68,6 +72,8 @@ class PythonParser:
         match node:
             case ast.Constant(value=value):
                 return literal(at, value)
+            case ast.List(elts=values):
+                return ir.IntList(at, tuple(self.expression(value) for value in values))
             case ast.Name(id=name):
                 return ir.Name(at, name)
             case ast.UnaryOp(op=operator, operand=operand):
@@ -75,6 +81,9 @@ class PythonParser:
                 if type(operator) in operators:
                     return unary(at, operators[type(operator)], self.expression(operand))
             case ast.BinOp(left=left, op=operator, right=right):
+                if (isinstance(operator, ast.Pow) and isinstance(right, ast.Constant)
+                        and type(right.value) is int and right.value == 2 and isinstance(left, (ast.Name, ast.Constant))):
+                    return ir.Binary(at, "*", self.expression(left), self.expression(left))
                 if type(operator) in self.binary:
                     return ir.Binary(at, self.binary[type(operator)], self.expression(left), self.expression(right))
             case ast.BoolOp(op=operator, values=values):
@@ -92,11 +101,39 @@ class PythonParser:
                     for comparison in pairs[1:]:
                         result = ir.Binary(at, "&&", result, comparison)
                     return result
-            case ast.Call(func=ast.Name(id=name), args=arguments, keywords=[]):
-                return ir.Call(at, name, tuple(self.expression(arg) for arg in arguments))
+            case ast.Call(func=ast.Name(id=name)):
+                return self.call(node, name)
             case ast.IfExp(test=test, body=yes, orelse=no):
                 return ir.Choice(at, self.expression(test), self.expression(yes), self.expression(no))
         raise at.error(f"expression {type(node).__name__} is outside the portable profile")
+
+    def call(self, node: ast.Call, name: str) -> ir.Call:
+        at = self.at(node)
+        signature = self.signatures.get(name)
+        if signature is None:
+            if node.keywords:
+                raise at.error("keyword arguments require a function defined in the same file")
+            return ir.Call(at, name, tuple(self.expression(arg) for arg in node.args))
+        parameters = [parameter.arg for parameter in signature.args]
+        if len(node.args) > len(parameters):
+            raise at.error("too many positional arguments")
+        arguments = dict(zip(parameters, node.args))
+        order = []
+        for keyword in node.keywords:
+            if keyword.arg not in parameters or keyword.arg in arguments:
+                raise self.at(keyword).error("unknown or duplicate keyword argument")
+            order.append(parameters.index(keyword.arg))
+            arguments[keyword.arg] = keyword.value
+        if order != sorted(order) and not all(isinstance(keyword.value, ast.Constant) for keyword in node.keywords):
+            raise at.error("pass computed keyword arguments in parameter order to preserve evaluation order")
+        defaults = dict(zip(reversed(parameters), reversed(signature.defaults)))
+        values = []
+        for parameter in parameters:
+            value = arguments.get(parameter, defaults.get(parameter))
+            if value is None:
+                raise at.error(f"missing argument {parameter} for {name}")
+            values.append(self.expression(value))
+        return ir.Call(at, name, tuple(values))
 
     def printed(self, node: ast.Call) -> ir.Print:
         settings = {"sep": " ", "end": "\n"}
@@ -195,6 +232,9 @@ class PythonParser:
                 return ir.Jump(at, "continue")
             case ast.Expr(value=ast.Call(func=ast.Name(id="print")) as call):
                 return self.printed(call)
+            case ast.Expr(value=ast.Call(func=ast.Attribute(value=ast.Name(id=name) as receiver, attr="append"),
+                                         args=[value], keywords=[])):
+                return ir.Append(at, ir.Name(self.at(receiver), name), self.expression(value))
             case ast.Expr(value=ast.Call() as call):
                 expression = self.expression(call)
                 return ir.Invoke(at, expression)
@@ -202,9 +242,12 @@ class PythonParser:
 
     def function(self, node: ast.FunctionDef) -> ir.Function:
         args = node.args
-        if (node.decorator_list or getattr(node, "type_params", ()) or args.posonlyargs or args.defaults
+        if (node.decorator_list or getattr(node, "type_params", ()) or args.posonlyargs
                 or args.vararg or args.kwarg or args.kwonlyargs):
-            raise self.at(node).error("use ordinary parameters without defaults or decorators")
+            raise self.at(node).error("use ordinary parameters without decorators")
+        for default in args.defaults:
+            if not isinstance(self.expression(default), ir.Literal):
+                raise self.at(default).error("defaults must be scalar literals")
         parameters = tuple(ir.Parameter(self.at(arg), self.name(arg, arg.arg), self.annotation(arg.annotation))
                            for arg in args.args)
         body = node.body[1:] if docstring(node.body[0]) else node.body
@@ -216,6 +259,7 @@ class PythonParser:
         tree = ast.parse(source, filename=str(path))
         functions, statements = [], []
         body = tree.body[1:] if tree.body and docstring(tree.body[0]) else tree.body
+        self.signatures = {node.name: node.args for node in body if isinstance(node, ast.FunctionDef)}
         for node in body:
             if isinstance(node, ast.FunctionDef):
                 if statements:

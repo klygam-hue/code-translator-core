@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal as Kind
 
-Type = Kind["int", "bool", "str", "void"]
+Type = Kind["int", "bool", "str", "int_list", "void"]
 INT_MIN = -(2 ** 31)
 INT_MAX = 2 ** 31 - 1
 
@@ -27,6 +27,11 @@ class Expr:
 @dataclass(frozen=True)
 class Literal(Expr):
     value: int | bool | str
+
+
+@dataclass(frozen=True)
+class IntList(Expr):
+    values: tuple[Expr, ...]
 
 
 @dataclass(frozen=True)
@@ -110,6 +115,12 @@ class Invoke(Stmt):
 
 
 @dataclass(frozen=True)
+class Append(Stmt):
+    target: Name
+    value: Expr
+
+
+@dataclass(frozen=True)
 class Jump(Stmt):
     command: str
 
@@ -139,13 +150,14 @@ class Program:
 
 
 SCALARS = frozenset({"int", "bool", "str"})
+VALUES = SCALARS | {"int_list"}
 
 
 @dataclass(eq=False)
 class TypeSlot:
     at: Position
     label: str
-    possible: frozenset[Type] = SCALARS
+    possible: frozenset[Type] = VALUES
     link: TypeSlot | None = field(default=None, repr=False)
 
     def root(self) -> TypeSlot:
@@ -199,6 +211,7 @@ class Analysis:
         self.calls_in_values: list[Call] = []
         self.effects: dict[str, set[str]] = {}
         self.output_functions: set[str] = set()
+        self.list_writers: set[str] = set()
         self.prints: list[Print] = []
         self.loop_fallthrough: set[int] = set()
         self.implicit_main_return = False
@@ -208,9 +221,9 @@ class Analysis:
             if function.name in self.functions:
                 raise function.at.error(f"duplicate declaration of function {function.name}")
             params = tuple(Variable(parameter.name, TypeSlot(parameter.at, parameter.name,
-                           frozenset({parameter.annotation}) if parameter.annotation else SCALARS))
+                           frozenset({parameter.annotation}) if parameter.annotation else VALUES))
                            for parameter in function.parameters)
-            result_types = frozenset({function.returns}) if function.returns else SCALARS | {"void"}
+            result_types = frozenset({function.returns}) if function.returns else VALUES | {"void"}
             result = TypeSlot(function.at, f"the return value of {function.name}", result_types)
             self.functions[function.name] = Signature(params, result)
             self.effects[function.name] = set()
@@ -243,12 +256,15 @@ class Analysis:
                     if self.expressions[id(first)].kind() == "str" and not isinstance(first, Literal):
                         raise first.at.error("the first argument of a multi-argument console.log may contain a % format specifier")
 
-        effectful = set(self.output_functions)
+        effectful = self.output_functions | {
+            name for name in self.list_writers
+            if any(parameter.slot.kind() == "int_list" for parameter in self.functions[name].parameters)
+        }
         while additions := {name for name, calls in self.effects.items() if calls & effectful} - effectful:
             effectful.update(additions)
         for call in self.calls_in_values:
             if call.name in effectful:
-                raise call.at.error(f"calling {call.name} inside an expression may produce output. Call it as a separate statement")
+                raise call.at.error(f"calling {call.name} inside an expression may produce output or modify a list. Call it as a separate statement")
         return self
 
 
@@ -276,6 +292,10 @@ class FunctionAnalysis:
                 if kind == "str" and ("\0" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value)):
                     raise node.at.error("string contains NUL or an unpaired Unicode surrogate")
                 result.constrain({kind}, node.at)
+            case IntList(values=values):
+                for value in values:
+                    self.expression(value, assigned).constrain({"int"}, value.at)
+                result.constrain({"int_list"}, node.at)
             case Name(name=name):
                 variable = self.lookup(name)
                 if variable is None or variable not in assigned:
@@ -293,6 +313,7 @@ class FunctionAnalysis:
             case Binary(operator=op, left=left_node, right=right_node):
                 left, right = self.expression(left_node, assigned), self.expression(right_node, assigned)
                 if op in {"==", "!="}:
+                    left.constrain(SCALARS, left_node.at)
                     if self.analysis.program.source in {"java", "c", "cpp"}:
                         left.constrain({"int", "bool"}, left_node.at)
                     left.merge(right, node.at)
@@ -320,7 +341,7 @@ class FunctionAnalysis:
                 if self.function is not None:
                     self.analysis.effects[self.function].add(name)
                 if not statement:
-                    signature.result.constrain(SCALARS, node.at)
+                    signature.result.constrain(VALUES, node.at)
                     self.analysis.calls_in_values.append(node)
                 result = signature.result
             case Choice(condition=condition, yes=yes, no=no):
@@ -415,7 +436,7 @@ class FunctionAnalysis:
                     if value is None:
                         self.signature.result.constrain({"void"}, node.at)
                     else:
-                        self.signature.result.constrain(SCALARS, node.at)
+                        self.signature.result.constrain(VALUES, node.at)
                         self.signature.result.merge(self.expression(value, assigned), node.at)
                     falls_through = False
                 case Print(values=values, formats=formats):
@@ -429,6 +450,11 @@ class FunctionAnalysis:
                             slot.constrain(allowed, expression.at)
                 case Invoke(call=call):
                     self.expression(call, assigned, statement=True)
+                case Append(target=target, value=value):
+                    self.expression(target, assigned).constrain({"int_list"}, target.at)
+                    self.expression(value, assigned).constrain({"int"}, value.at)
+                    if self.function is not None:
+                        self.analysis.list_writers.add(self.function)
                 case Jump():
                     if not self.loops:
                         raise node.at.error(f"{node.command} outside a loop")

@@ -16,6 +16,24 @@ import translator
 
 
 class PortableSemantics(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for this execution comparison")
+    def test_python_lists_and_keyword_arguments_translate_to_javascript(self):
+        source = self.make_source("python", (
+            'def squares(limit=6, start=0) -> list[int]:\n'
+            '    values = []\n    alias = values\n'
+            '    for n in range(start, limit):\n'
+            '        if n % 2 == 0:\n            alias.append(n ** 2)\n'
+            '    return values\n'
+            'print(f"values: {squares(start=1)}")\n'
+            'print(squares(start=2, limit=5))\n'
+        ))
+        target = source.with_suffix(".js")
+        with redirect_stdout(StringIO()):
+            self.assertEqual(translator.main([str(source), "--output", str(target)]), 0)
+        expected = subprocess.run([sys.executable, source], capture_output=True, text=True, check=True, timeout=10)
+        actual = subprocess.run(["node", target], capture_output=True, text=True, check=True, timeout=10)
+        self.assertEqual((actual.stdout, actual.stderr), (expected.stdout, expected.stderr))
+
     def test_python_formats_and_parallel_assignment_preserve_output(self):
         source = ('a = b = 1\na, b = a + 1, b + 2\na, b = b, a\n'
                   'print(f"values: {a!s}, {b}", True, sep=" | ", end="!")\n')

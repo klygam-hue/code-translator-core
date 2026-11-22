@@ -94,7 +94,8 @@ def main(argv: list[str] | None = None) -> int:
     default_target = "cpp" if original == "python" else "python"
     if original == "c" and args.mode == "auto":
         default_target = "zig"
-    targets = list(dict.fromkeys(args.targets or [default_target]))
+    inferred_target = SOURCE_EXTENSIONS.get(args.output.suffix.lower().removeprefix(".")) if args.output else None
+    targets = list(dict.fromkeys(args.targets or [inferred_target or default_target]))
     if args.output and len(targets) != 1:
         parser.error("--output requires a single target language")
     outputs = [args.output or (args.input.with_stem(args.input.stem + "_copy") if target == original

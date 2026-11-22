@@ -23,6 +23,17 @@ TYPES = {
     "zig": {"int": "i32", "bool": "bool", "str": "[]const u8", "void": "void"},
 }
 
+LIST_TYPES = {
+    "python": "list[int]",
+    "typescript": "number[]",
+    "java": "java.util.ArrayList<Integer>",
+    "csharp": "System.Collections.Generic.List<int>",
+}
+LIST_TARGETS = {*LIST_TYPES, "javascript", "ruby"}
+for language, list_type in LIST_TYPES.items():
+    TYPES[language]["int_list"] = list_type
+
+
 CHECKED_INT = {
     "python": """\
 def ct_i(value: int) -> int:
@@ -223,6 +234,13 @@ class Emitter:
         self.analysis = analysis
         self.program = analysis.program
         self.target = target
+        if target not in LIST_TARGETS:
+            signatures = (*analysis.functions.values(), analysis.entry)
+            slots = (*analysis.expressions.values(), *(signature.result for signature in signatures),
+                     *(variable.slot for signature in signatures for variable in (*signature.parameters, *signature.variables)))
+            for slot in slots:
+                if slot.kind() == "int_list":
+                    raise slot.at.error(f"integer lists are not supported for {target}")
         self.python = target == "python"
         self.ruby = target == "ruby"
         self.go = target == "go"
@@ -314,6 +332,14 @@ class Emitter:
         match node:
             case ir.Literal(value=value):
                 return self.literal(value)
+            case ir.IntList(values=values):
+                contents = ", ".join(self.expression(value) for value in values)
+                if self.target == "java":
+                    arguments = f"java.util.Arrays.asList({contents})" if values else ""
+                    return f"new java.util.ArrayList<Integer>({arguments})"
+                if self.target == "csharp":
+                    return f"new System.Collections.Generic.List<int> {{ {contents} }}"
+                return f"[{contents}]"
             case ir.Name():
                 return self.variables[self.analysis.references[id(node)]]
             case ir.Call(name=name, arguments=arguments):
@@ -372,6 +398,16 @@ class Emitter:
 
     def output_value(self, node: ir.Expr, style: str) -> tuple[str, ir.Type]:
         value, kind = self.expression(node), self.kind(node)
+        if kind == "int_list":
+            if self.ruby:
+                value = f"({value}).inspect"
+            elif self.script:
+                value = f'("[" + ({value}).join(", ") + "]")'
+            elif self.target == "csharp":
+                value = f'("[" + string.Join(", ", {value}) + "]")'
+            elif self.target == "java":
+                value = f"({value}).toString()"
+            return value, "str"
         if kind != "bool":
             return value, kind
         words = {"upper": ("True", "False"), "lower": ("true", "false"), "numeric": ("1", "0")}
@@ -521,6 +557,9 @@ class Emitter:
                 case ir.Invoke(call=call):
                     prefix = "_ = " if self.zig and self.kind(call) != "void" else ""
                     self.statement(prefix + self.expression(call))
+                case ir.Append(target=target, value=value):
+                    method = {"python": "append", "java": "add", "csharp": "Add"}.get(self.target, "push")
+                    self.statement(f"{self.expression(target)}.{method}({self.expression(value)})")
                 case ir.Jump(command=command):
                     if command == "continue":
                         self.body(self.loop_updates[-1])
