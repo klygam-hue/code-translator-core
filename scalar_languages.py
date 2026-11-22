@@ -31,20 +31,20 @@ class SqlParser(BracedParser):
     def keyword(self, name: str) -> Token:
         token = self.take()
         if token.text.lower() != name:
-            raise token.at.error(f"в скалярном запросе SQLite ожидается {name.upper()}")
+            raise token.at.error(f"expected {name.upper()} in the scalar SQLite query")
         return token
 
     def sql_name(self) -> Token:
         token = self.take()
         if token.kind != "name" or token.text.lower() in {"select", "from", "where", "as", "with", "null", "true", "false"}:
-            raise token.at.error("ожидается имя вычисления или столбца")
+            raise token.at.error("expected a computation or column name")
         return token
 
     def from_step(self, previous: str) -> None:
         self.keyword("from")
         name = self.sql_name()
         if name.text.lower() != previous:
-            raise name.at.error("FROM должен ссылаться на предыдущее скалярное вычисление WITH")
+            raise name.at.error("FROM must reference the previous scalar WITH expression")
 
     def parse(self) -> ir.Program:
         body = []
@@ -57,7 +57,7 @@ class SqlParser(BracedParser):
                 step = self.sql_name()
                 name = step.text.lower()
                 if name in steps:
-                    raise step.at.error("повторное имя вычисления WITH")
+                    raise step.at.error("duplicate WITH expression name")
                 steps.add(name)
                 self.keyword("as")
                 self.take("(")
@@ -70,7 +70,7 @@ class SqlParser(BracedParser):
                 column = self.sql_name()
                 variable = column.text.lower()
                 if variable in values:
-                    raise column.at.error("повторное имя столбца WITH")
+                    raise column.at.error("duplicate WITH column name")
                 if previous:
                     self.from_step(previous)
                 self.take(")")
@@ -88,7 +88,7 @@ class SqlParser(BracedParser):
             self.from_step(previous)
         self.accept(";")
         if self.token.kind != "eof":
-            raise self.token.at.error("SQLite: ожидается одно выражение SELECT без таблиц")
+            raise self.token.at.error("SQLite: expected a single SELECT expression without table references")
         constant(result, values)
         body.append(ir.Print(start.at, (result,), "", "\n", "lower"))
         return ir.Program("sql", (), tuple(body))
@@ -107,9 +107,9 @@ def asm_operand(text: str, at: ir.Position) -> ir.Expr:
         base = 16 if text.lstrip("+-").startswith("0x") else 10
         value = int(text, base)
         if not ir.INT_MIN <= value <= 0xFFFFFFFF:
-            raise at.error("литерал выходит за пределы 32-битного операнда NASM")
+            raise at.error("literal is outside the range of a 32-bit NASM operand")
         return ir.Literal(at, signed_register_value(value))
-    raise at.error("ожидается 32-битный регистр или целое число NASM")
+    raise at.error("expected a 32-bit NASM register or integer")
 
 
 def parse_assembly(source: str) -> ir.Program:
@@ -132,7 +132,7 @@ def parse_assembly(source: str) -> ir.Program:
             entry = match[1]
             continue
         if finished:
-            raise at.error("после ret не должно быть инструкций")
+            raise at.error("instructions after ret are unsupported")
         if text.lower() == "ret":
             finished = True
             continue
@@ -153,19 +153,19 @@ def parse_assembly(source: str) -> ir.Program:
             if instruction in ASM_BINARY:
                 value = ir.Binary(at, ASM_BINARY[instruction], ir.Name(at, register), value)
         else:
-            raise at.error("ожидается простая операция NASM над 32-битными регистрами, без обращений к памяти")
+            raise at.error("expected a simple NASM operation on 32-bit registers without memory operands")
         exact = constant(value, registers, checked=False)
         wrapped = signed_register_value(exact)
         registers[register] = wrapped
         body.append(ir.Bind(at, register, value if exact == wrapped else ir.Literal(at, wrapped), "int"))
     end = ir.Position(max(1, len(source.splitlines())), 1)
     if exported and exported != entry:
-        raise end.error("имя global должно совпадать с меткой функции")
+        raise end.error("the global name must match the function label")
     # A bare instruction fragment displays EAX; a labelled routine returns it.
     value = ir.Name(end, "eax")
     if entry:
         if not finished:
-            raise end.error("закончите функцию NASM инструкцией ret")
+            raise end.error("end the NASM function with ret")
         function = ir.Function(end, entry, (), "int", (*body, ir.Return(end, value)))
         return ir.Program("assembly", (function,), main=entry if entry == "main" else None)
     return ir.Program("assembly", (), (*body, ir.Print(end, (value,), "", "\n", "lower")))
@@ -186,30 +186,30 @@ def constant(node: ir.Expr, values: dict, analysis: ir.Analysis | None = None, *
         case ir.Name(name=name):
             key = analysis.references[id(node)] if analysis is not None else name
             if key not in values:
-                raise node.at.error(f"значение {name} не определено в скалярном выражении")
+                raise node.at.error(f"value {name} is undefined in the scalar expression")
             value = values[key]
         case ir.Unary(operator=op, operand=operand) if op in {"+", "-"}:
             number = constant(operand, values, analysis, checked=checked)
             if type(number) is not int:
-                raise node.at.error("знак применяется к целому числу")
+                raise node.at.error("unary signs apply to integers")
             value = number if op == "+" else -number
         case ir.Binary(operator=op, left=left, right=right):
             a, b = (constant(part, values, analysis, checked=checked) for part in (left, right))
             if type(a) is not int or type(b) is not int:
-                raise node.at.error("арифметика поддерживается для целых чисел")
+                raise node.at.error("arithmetic is supported for integers")
             if op in INT_BINARY:
                 value = INT_BINARY[op](a, b)
             elif op in {"tdiv", "tmod", "fdiv", "fmod"}:
                 if b == 0:
-                    raise node.at.error("деление на ноль в скалярном выражении")
+                    raise node.at.error("division by zero in the scalar expression")
                 quotient = a // b if op.startswith("f") else abs(a) // abs(b) * (-1 if (a < 0) != (b < 0) else 1)
                 value = quotient if op.endswith("div") else a - b * quotient
             else:
-                raise node.at.error("эта операция вне скалярного профиля")
+                raise node.at.error("this operation is outside the scalar profile")
         case _:
-            raise node.at.error("ожидается вычисление из целых чисел или строковых значений")
+            raise node.at.error("expected an expression using integers or strings")
     if checked and type(value) is int and not ir.INT_MIN <= value <= ir.INT_MAX:
-        raise node.at.error("результат вычисления вне диапазона int32")
+        raise node.at.error("computed result is outside the int32 range")
     return value
 
 
@@ -222,17 +222,17 @@ def scalar_output(analysis: ir.Analysis) -> tuple[tuple[ir.Bind, ...], ir.Expr]:
             if statements[-1].value is not None and not (
                 isinstance(statements[-1].value, ir.Literal) and statements[-1].value.value == 0
             ):
-                raise statements[-1].at.error("скалярный перевод требует обычного выхода из main с кодом 0")
+                raise statements[-1].at.error("scalar translation requires main to exit with status 0")
             statements = statements[:-1]
     elif program.functions:
-        raise program.functions[0].at.error("скалярный перевод поддерживает прямые вычисления без вызовов функций")
+        raise program.functions[0].at.error("scalar translation supports direct computations without function calls")
     if statements and isinstance(statements[-1], ir.Print):
         output = statements[-1]
         if len(output.values) == 1 and output.ending == "\n" and not output.stderr:
             if all(isinstance(node, ir.Bind) for node in statements[:-1]):
                 return statements[:-1], output.values[0]
     at = statements[0].at if statements else ir.Position(1, 1)
-    raise at.error("ожидаются присваивания и один вывод значения в конце")
+    raise at.error("expected assignments followed by one output value")
 
 
 def render_sql(analysis: ir.Analysis) -> str:
@@ -308,12 +308,12 @@ def render_assembly(analysis: ir.Analysis) -> str:
                 instruction = {"+": "add", "-": "sub", "*": "imul"}[op]
                 lines.append(f"    {instruction} eax, ecx")
             case _:
-                raise node.at.error("вывод NASM поддерживает целые числа и операции +, -, *")
+                raise node.at.error("NASM output supports integers and the +, -, and * operators")
 
     for index, bind in enumerate(binds, 1):
         value = constant(bind.value, values, analysis)
         if type(value) is not int:
-            raise bind.at.error("вывод NASM поддерживает целочисленные присваивания")
+            raise bind.at.error("NASM output supports integer assignments")
         expression(bind.value)
         variable = analysis.references[id(bind)]
         offset = index * 4
@@ -321,7 +321,7 @@ def render_assembly(analysis: ir.Analysis) -> str:
         values[variable] = value
         lines.append(f"    mov [rbp - {offset}], eax")
     if type(constant(output, values, analysis)) is not int:
-        raise output.at.error("вывод NASM поддерживает одно целое число")
+        raise output.at.error("NASM output supports one integer result")
     expression(output)
     lines.extend(("    mov esi, eax", "    lea rdi, [rel result_format]", "    xor eax, eax",
                   "    call printf wrt ..plt", "    xor eax, eax", "    leave", "    ret",

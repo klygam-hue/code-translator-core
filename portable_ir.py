@@ -159,7 +159,7 @@ class TypeSlot:
         common = root.possible & types
         if not common:
             have, want = ", ".join(sorted(root.possible)), ", ".join(sorted(types))
-            raise at.error(f"несовместимые типы для {self.label}: {have} и {want}")
+            raise at.error(f"incompatible types for {self.label}: {have} and {want}")
         root.possible = common
 
     def merge(self, other: TypeSlot, at: Position) -> None:
@@ -171,7 +171,7 @@ class TypeSlot:
     def kind(self) -> Type:
         possible = self.root().possible
         if len(possible) != 1:
-            raise self.at.error(f"не удалось вывести тип для {self.label}. Укажите тип или добавьте вызов с типизированным аргументом")
+            raise self.at.error(f"could not infer the type of {self.label}. Add an annotation or a call with a typed argument")
         return next(iter(possible))
 
 
@@ -193,7 +193,7 @@ class Analysis:
     def __init__(self, program: Program):
         self.program = program
         self.functions: dict[str, Signature] = {}
-        self.entry = Signature((), TypeSlot(Position(1, 1), "точки входа", frozenset({"void"})))
+        self.entry = Signature((), TypeSlot(Position(1, 1), "the entry point", frozenset({"void"})))
         self.expressions: dict[int, TypeSlot] = {}
         self.references: dict[int, Variable] = {}
         self.calls_in_values: list[Call] = []
@@ -206,19 +206,19 @@ class Analysis:
     def run(self) -> Analysis:
         for function in self.program.functions:
             if function.name in self.functions:
-                raise function.at.error(f"повторное объявление функции {function.name}")
+                raise function.at.error(f"duplicate declaration of function {function.name}")
             params = tuple(Variable(parameter.name, TypeSlot(parameter.at, parameter.name,
                            frozenset({parameter.annotation}) if parameter.annotation else SCALARS))
                            for parameter in function.parameters)
             result_types = frozenset({function.returns}) if function.returns else SCALARS | {"void"}
-            result = TypeSlot(function.at, f"результата {function.name}", result_types)
+            result = TypeSlot(function.at, f"the return value of {function.name}", result_types)
             self.functions[function.name] = Signature(params, result)
             self.effects[function.name] = set()
 
         for function in self.program.functions:
             signature = self.functions[function.name]
             if len({parameter.name for parameter in signature.parameters}) != len(signature.parameters):
-                raise function.at.error("повторное имя параметра")
+                raise function.at.error("duplicate parameter name")
             reader = FunctionAnalysis(self, signature, function.name)
             _, falls_through = reader.block(function.body, set(signature.parameters), scoped=False)
             if falls_through:
@@ -229,7 +229,7 @@ class Analysis:
         FunctionAnalysis(self, self.entry, None).block(self.program.body, set(), scoped=False)
         for variable in self.entry.variables:
             if variable.name in self.functions:
-                raise variable.slot.at.error(f"переменная {variable.name} перекрывает имя функции")
+                raise variable.slot.at.error(f"variable {variable.name} shadows a function name")
         for signature in (*self.functions.values(), self.entry):
             signature.result.kind()
             for variable in (*signature.parameters, *signature.variables):
@@ -241,14 +241,14 @@ class Analysis:
                 if len(output.values) > 1 and not output.formats:
                     first = output.values[0]
                     if self.expressions[id(first)].kind() == "str" and not isinstance(first, Literal):
-                        raise first.at.error("первый аргумент console.log с несколькими значениями может содержать формат %")
+                        raise first.at.error("the first argument of a multi-argument console.log may contain a % format specifier")
 
         effectful = set(self.output_functions)
         while additions := {name for name, calls in self.effects.items() if calls & effectful} - effectful:
             effectful.update(additions)
         for call in self.calls_in_values:
             if call.name in effectful:
-                raise call.at.error(f"вызов {call.name} внутри выражения может печатать. Вызовите его отдельной инструкцией")
+                raise call.at.error(f"calling {call.name} inside an expression may produce output. Call it as a separate statement")
         return self
 
 
@@ -267,19 +267,19 @@ class FunctionAnalysis:
         return next((scope[name] for scope in reversed(self.scopes) if name in scope), None)
 
     def expression(self, node: Expr, assigned: set[Variable], *, statement: bool = False) -> TypeSlot:
-        result = TypeSlot(node.at, "выражения")
+        result = TypeSlot(node.at, "the expression")
         match node:
             case Literal(value=value):
                 kind = "bool" if type(value) is bool else "int" if type(value) is int else "str"
                 if kind == "int" and not INT_MIN <= value <= INT_MAX:
-                    raise node.at.error("целое число вне диапазона int32")
+                    raise node.at.error("integer is outside the int32 range")
                 if kind == "str" and ("\0" in value or any(0xD800 <= ord(char) <= 0xDFFF for char in value)):
-                    raise node.at.error("строка содержит NUL или непарный суррогат Unicode")
+                    raise node.at.error("string contains NUL or an unpaired Unicode surrogate")
                 result.constrain({kind}, node.at)
             case Name(name=name):
                 variable = self.lookup(name)
                 if variable is None or variable not in assigned:
-                    raise node.at.error(f"переменная {name} не определена на этом пути")
+                    raise node.at.error(f"variable {name} is not defined on this path")
                 self.analysis.references[id(node)] = variable
                 result = variable.slot
             case Unary(operator=op, operand=operand):
@@ -303,18 +303,18 @@ class FunctionAnalysis:
                     result.constrain({"bool"}, node.at)
                 else:
                     if op == "floatdiv":
-                        raise node.at.error("дробное деление вне переносимого профиля. Для целых используйте //, Math.trunc(a / b) или Math.floor(a / b)")
+                        raise node.at.error("floating-point division is outside the portable profile. For integer division, use //, Math.trunc(a / b), or Math.floor(a / b)")
                     left.constrain({"int"}, left_node.at)
                     right.constrain({"int"}, right_node.at)
                     result.constrain({"bool"} if op in {"<", "<=", ">", ">="} else {"int"}, node.at)
             case Call(name=name, arguments=arguments):
                 if self.lookup(name) is not None:
-                    raise node.at.error(f"вызов локальной переменной {name} вне переносимого профиля")
+                    raise node.at.error(f"calling local variable {name} is outside the portable profile")
                 signature = self.analysis.functions.get(name)
                 if signature is None:
-                    raise node.at.error(f"нет переносимой реализации функции {name}")
+                    raise node.at.error(f"function {name} has no portable implementation")
                 if len(arguments) != len(signature.parameters):
-                    raise node.at.error(f"{name} ожидает {len(signature.parameters)} аргументов")
+                    raise node.at.error(f"{name} expects {len(signature.parameters)} arguments")
                 for argument, parameter in zip(arguments, signature.parameters):
                     self.expression(argument, assigned).merge(parameter.slot, argument.at)
                 if self.function is not None:
@@ -342,7 +342,7 @@ class FunctionAnalysis:
     def declare(self, node: Bind) -> Variable:
         existing = self.lookup(node.name) if self.analysis.program.source in {"java", "csharp"} else self.scopes[-1].get(node.name)
         if existing is not None:
-            raise node.at.error(f"повторное объявление {node.name}")
+            raise node.at.error(f"duplicate declaration of {node.name}")
         variable = Variable(node.name, TypeSlot(node.at, node.name), node.constant)
         self.scopes[-1][node.name] = variable
         self.signature.variables.append(variable)
@@ -361,10 +361,10 @@ class FunctionAnalysis:
             variable = self.lookup(node.name)
             if variable is None:
                 if not self.python_scope:
-                    raise node.at.error(f"присваивание необъявленной переменной {node.name}")
+                    raise node.at.error(f"assignment to undeclared variable {node.name}")
                 variable = self.declare(node)
             elif variable.constant or (self.javascript_scope and variable not in assigned):
-                raise node.at.error(f"нельзя присвоить значение {node.name} до объявления или изменить константу")
+                raise node.at.error(f"cannot assign to {node.name} before declaration or modify a constant")
         if node.annotation:
             variable.slot.constrain({node.annotation}, node.at)
         variable.slot.merge(value, node.at)
@@ -383,7 +383,7 @@ class FunctionAnalysis:
         falls_through = True
         for node in nodes:
             if not falls_through:
-                raise node.at.error("переносимый профиль требует достижимых инструкций после перехода")
+                raise node.at.error("statements after a jump must be reachable in the portable profile")
             match node:
                 case Bind():
                     self.bind(node, assigned)
@@ -411,7 +411,7 @@ class FunctionAnalysis:
                         self.scopes.pop()
                 case Return(value=value):
                     if self.function is None:
-                        raise node.at.error("return вне функции")
+                        raise node.at.error("return outside a function")
                     if value is None:
                         self.signature.result.constrain({"void"}, node.at)
                     else:
@@ -431,7 +431,7 @@ class FunctionAnalysis:
                     self.expression(call, assigned, statement=True)
                 case Jump():
                     if not self.loops:
-                        raise node.at.error(f"{node.command} вне цикла")
+                        raise node.at.error(f"{node.command} outside a loop")
                     falls_through = False
                 case _:
                     raise AssertionError(node)

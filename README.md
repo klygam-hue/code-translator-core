@@ -1,12 +1,12 @@
 # Code Translator Core
 
-Транслятор исходного кода с командной строкой. Разбирает поддерживаемые конструкции в общее типизированное представление и генерирует исходник на выбранном языке.
+Command-line source-to-source translator. It parses supported constructs into a shared typed representation and generates source code in the target language.
 
-**Языки:** Python, JavaScript, TypeScript, C, C++, C#, Java, Go, Rust, Zig, Ruby, SQL (SQLite) и Assembly (NASM x86-64).
+**Languages:** Python, JavaScript, TypeScript, C, C++, C#, Java, Go, Rust, Zig, Ruby, SQL (SQLite), and Assembly (NASM x86-64).
 
-## Быстрый старт
+## Quick start
 
-Требуется Python 3.11 или новее. Для переносимого режима достаточно стандартной библиотеки Python. Для запуска результата нужен компилятор или интерпретатор целевого языка.
+Requires Python 3.11 or later. The portable mode uses only the Python standard library. Running the generated code requires the target language's compiler or interpreter.
 
 ~~~sh
 python translator.py --list
@@ -15,34 +15,34 @@ node translated.js
 python translator.py portable_example.py --mode portable --to c --to ruby
 ~~~
 
-Исходный язык определяется по расширению файла. Его можно задать через `--from`. Повторите `--to`, чтобы получить несколько результатов. Флаг `-o` задаёт имя файла для одного результата.
+The translator infers the source language from the file extension. Use `--from` to override it. Repeat `--to` to generate multiple outputs. Use `-o` to name the output file when selecting a single target language.
 
-## Режимы
+## Translation modes
 
-| Режим | Поведение |
+| Mode | Behavior |
 | --- | --- |
-| `auto` | Выбирает доступный генератор. Для Python → C++ доступны генерация под CPython и встроенный скрипт. Для C → Zig использует Zig, если он установлен. |
-| `portable` | Генерирует код из общего типизированного представления. |
-| `strict` | Для Python → C++ требует генерации C++ с CPython. Для остальных направлений применяет общий профиль. |
-| `compatible` | Для Python → C++ встраивает исходный скрипт. При запуске используются CPython и зависимости исходного скрипта. |
+| `auto` | Selects an available generator. Python → C++ can generate code that uses CPython or embed the original script. C → Zig uses Zig when installed. |
+| `portable` | Generates code from the shared typed representation. |
+| `strict` | Requires Python → C++ to generate code that uses CPython directly. Other language pairs use the portable profile. |
+| `compatible` | Embeds the original script for Python → C++. Running the result requires CPython and the original script's dependencies. |
 
-Для сборки результата с CPython выполните `python build_cpp.py translated.cpp`. Понадобятся заголовки и библиотеки текущего CPython и компилятор C++17. Для `zig translate-c` установите Zig и добавьте его в `PATH`.
+To build C++ output that uses CPython, run `python build_cpp.py translated.cpp`. This requires the headers and libraries for the current CPython installation and a C++17 compiler. To use `zig translate-c`, install Zig and add it to `PATH`.
 
-## Поддерживаемый профиль
+## Supported profile
 
-Общее ядро рассчитано на отдельные файлы со скалярными функциями, переменными, условиями, циклами и консольным выводом. Поддерживаются целые `int32`, логические значения и строки. Возможности зависят от пары языков. Массивы, асинхронность, дробная арифметика и внешние библиотеки выходят за пределы общего профиля. Диагностика указывает позицию, когда она известна.
+The shared core handles individual files with scalar functions, variables, conditionals, loops, and console output. It supports `int32` integers, booleans, and strings. Capabilities vary by language pair. Arrays, asynchronous code, floating-point arithmetic, and external libraries are outside the shared profile. Diagnostics include a source position when available.
 
-- SQLite обрабатывает скалярные вычисления `SELECT` без обращения к таблицам.
-- NASM принимает прямолинейную арифметику на 32-битных регистрах. Выход для Linux x86-64 собирается через `nasm -f elf64 translated.asm` и `cc translated.o -o translated`.
+- SQLite supports scalar `SELECT` expressions without database table references.
+- NASM accepts straight-line arithmetic on 32-bit registers. To build the generated Linux x86-64 program, run `nasm -f elf64 translated.asm`, followed by `cc translated.o -o translated`.
 
-## Тесты
+## Tests
 
 ~~~sh
 python -m unittest -v test_portable
 ~~~
 
-Проверки охватывают генерацию, ограничения профиля, целочисленные операции и сравнение исполнения Python и JavaScript. Последняя проверка запускается при наличии Node.js.
+The test suite covers code generation, profile limits, integer behavior, and a comparison of Python and JavaScript execution. The execution comparison runs when Node.js is available.
 
-## Лицензия
+## License
 
 [MIT](LICENSE).

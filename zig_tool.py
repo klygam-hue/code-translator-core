@@ -10,4 +10,4 @@ def command() -> list[str]:
         return [executable]
     if importlib.util.find_spec("ziglang") is not None:
         return [sys.executable, "-m", "ziglang"]
-    raise ValueError("нужен Zig в PATH или пакет ziglang (python -m pip install ziglang)")
+    raise ValueError("Install Zig on PATH or install the ziglang package (python -m pip install ziglang)")

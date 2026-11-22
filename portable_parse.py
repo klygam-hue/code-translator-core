@@ -25,7 +25,7 @@ TYPES = {
 
 def literal(at: ir.Position, value: object) -> ir.Literal:
     if type(value) not in (int, bool, str):
-        raise at.error("ожидается целое число, логическое значение или строка")
+        raise at.error("expected an integer, boolean, or string")
     return ir.Literal(at, value)
 
 
@@ -50,7 +50,7 @@ class PythonParser:
 
     def name(self, node: ast.AST, name: str) -> str:
         if name in self.reserved:
-            raise self.at(node).error(f"переносимый профиль сохраняет встроенное имя {name}")
+            raise self.at(node).error(f"the portable profile reserves the built-in name {name}")
         return name
 
     def annotation(self, node: ast.expr | None, *, result: bool = False) -> ir.Type | None:
@@ -61,7 +61,7 @@ class PythonParser:
         if isinstance(node, ast.Name) and node.id in {"bool", "int", "str"}:
             return node.id
         supported = "int, bool, str, None" if result else "int, bool, str"
-        raise self.at(node).error(f"поддерживаемые аннотации Python: {supported}")
+        raise self.at(node).error(f"supported Python annotations: {supported}")
 
     def expression(self, node: ast.expr) -> ir.Expr:
         at = self.at(node)
@@ -96,16 +96,16 @@ class PythonParser:
                 return ir.Call(at, name, tuple(self.expression(arg) for arg in arguments))
             case ast.IfExp(test=test, body=yes, orelse=no):
                 return ir.Choice(at, self.expression(test), self.expression(yes), self.expression(no))
-        raise at.error(f"выражение {type(node).__name__} вне переносимого профиля")
+        raise at.error(f"expression {type(node).__name__} is outside the portable profile")
 
     def printed(self, node: ast.Call) -> ir.Print:
         settings = {"sep": " ", "end": "\n"}
         for keyword in node.keywords:
             value = keyword.value
             if keyword.arg not in settings or not isinstance(value, ast.Constant) or not isinstance(value.value, str):
-                raise self.at(value).error("print поддерживает строковые константы sep и end")
+                raise self.at(value).error("print requires string literals for sep and end")
             if "\0" in value.value or any(0xD800 <= ord(char) <= 0xDFFF for char in value.value):
-                raise self.at(value).error("разделитель содержит NUL или непарный суррогат Unicode")
+                raise self.at(value).error("separator contains NUL or an unpaired Unicode surrogate")
             settings[keyword.arg] = value.value
         at = self.at(node)
         if not any(isinstance(argument, ast.JoinedStr) for argument in node.args):
@@ -121,7 +121,7 @@ class PythonParser:
             for fragment in argument.values:
                 if isinstance(fragment, ast.FormattedValue):
                     if fragment.conversion not in {-1, ord("s")} or fragment.format_spec is not None:
-                        raise self.at(fragment).error("поддерживается подстановка {значение} или {значение!s} без спецификатора формата")
+                        raise self.at(fragment).error("use {value} or {value!s} without a format specifier")
                     fragment = fragment.value
                 parts.append(self.expression(fragment))
         return ir.Print(at, tuple(parts), "", settings["end"], "upper")
@@ -142,7 +142,7 @@ class PythonParser:
                     and isinstance(node.value, (ast.Tuple, ast.List))):
                 targets, values = node.targets[0].elts, node.value.elts
                 if len(targets) != len(values) or not all(isinstance(target, ast.Name) for target in targets):
-                    raise at.error("распаковка требует одинакового количества значений и обычных имён")
+                    raise at.error("unpacking requires the same number of values and simple variable names")
                 self.assignments += 1
                 temporaries = [f"$assignment{self.assignments}_{i}" for i in range(len(values))]
                 evaluate = tuple(ir.Bind(at, name, self.expression(value)) for name, value in zip(temporaries, values))
@@ -172,9 +172,9 @@ class PythonParser:
                 lo, hi = arguments[:2] if len(arguments) >= 2 else (None, arguments[0])
                 step = self.expression(arguments[2]) if len(arguments) == 3 else ir.Literal(at, 1)
                 if not isinstance(step, ir.Literal) or type(step.value) is not int:
-                    raise at.error("шаг range должен быть постоянным целым числом")
+                    raise at.error("range step must be a constant integer")
                 if step.value == 0:
-                    raise at.error("шаг range не может быть равен нулю")
+                    raise at.error("range step cannot be zero")
                 initial = (ir.Bind(at, index, self.expression(lo) if lo else ir.Literal(at, 0)),
                            ir.Bind(at, stop, self.expression(hi)))
                 condition = ir.Binary(at, "<" if step.value > 0 else ">", ir.Name(at, index), ir.Name(at, stop))
@@ -198,13 +198,13 @@ class PythonParser:
             case ast.Expr(value=ast.Call() as call):
                 expression = self.expression(call)
                 return ir.Invoke(at, expression)
-        raise at.error(f"инструкция {type(node).__name__} вне переносимого профиля")
+        raise at.error(f"statement {type(node).__name__} is outside the portable profile")
 
     def function(self, node: ast.FunctionDef) -> ir.Function:
         args = node.args
         if (node.decorator_list or getattr(node, "type_params", ()) or args.posonlyargs or args.defaults
                 or args.vararg or args.kwarg or args.kwonlyargs):
-            raise self.at(node).error("поддерживаются обычные параметры без значений по умолчанию и декораторов")
+            raise self.at(node).error("use ordinary parameters without defaults or decorators")
         parameters = tuple(ir.Parameter(self.at(arg), self.name(arg, arg.arg), self.annotation(arg.annotation))
                            for arg in args.args)
         body = node.body[1:] if docstring(node.body[0]) else node.body
@@ -219,7 +219,7 @@ class PythonParser:
         for node in body:
             if isinstance(node, ast.FunctionDef):
                 if statements:
-                    raise self.at(node).error("объявите функции перед выполняемыми инструкциями")
+                    raise self.at(node).error("declare functions before executable statements")
                 functions.append(self.function(node))
             elif isinstance(node, ast.If) and not node.orelse and is_main_guard(node.test):
                 statements.extend(self.body(node.body))
@@ -265,7 +265,7 @@ def tokens(source: str, go: bool, pattern: re.Pattern[str] = SOURCE_TOKEN) -> li
         at = ir.Position(line, column)
         match = pattern.match(source, offset)
         if match is None:
-            raise at.error(f"неподдерживаемый символ {source[offset]!r}")
+            raise at.error(f"unsupported character {source[offset]!r}")
         kind, text = match.lastgroup, match.group()
         if kind not in {"space", "comment"}:
             result.append(Token(at, kind, text))
@@ -280,7 +280,7 @@ def tokens(source: str, go: bool, pattern: re.Pattern[str] = SOURCE_TOKEN) -> li
     at = ir.Position(line, column)
     if go:
         go_semicolon(result, at)
-    result.append(Token(at, "eof", "<конец файла>"))
+    result.append(Token(at, "eof", "<end of file>"))
     return result
 
 
@@ -301,7 +301,7 @@ def string_value(token: Token) -> str:
     def decode(match: re.Match[str]) -> str:
         escape = match.group()[1:]
         if escape not in escapes:
-            raise token.at.error(f"escape-последовательность \\{escape} вне переносимого профиля")
+            raise token.at.error(f"escape sequence \\{escape} is outside the portable profile")
         return escapes[escape]
 
     return re.sub(r"\\.", decode, content)
@@ -349,9 +349,9 @@ class BracedParser:
     def take(self, text: str | None = None) -> Token:
         token = self.token
         if text is not None and token.text != text:
-            raise token.at.error(f"ожидается {text}, получено {token.text}")
+            raise token.at.error(f"expected {text}, got {token.text}")
         if token.kind == "eof":
-            raise token.at.error("неожиданный конец файла")
+            raise token.at.error("unexpected end of file")
         self.index += 1
         return token
 
@@ -371,9 +371,9 @@ class BracedParser:
             or (self.c_family and token.text == "printf")
         )
         if token.kind != "name" or token.text in IDENTIFIERS_RESERVED or reserved_library:
-            raise token.at.error(f"ожидается пользовательское имя, получено {token.text}")
+            raise token.at.error(f"expected a user-defined name, got {token.text}")
         if token.text.startswith("@"):
-            raise token.at.error(f"ожидается пользовательское имя, получено {token.text}")
+            raise token.at.error(f"expected a user-defined name, got {token.text}")
         return token
 
     def end(self) -> None:
@@ -397,9 +397,9 @@ class BracedParser:
             self.take("*")
             name = "char*"
         if name not in SOURCE_TYPES[self.language] or (name == "void" and not include_void):
-            raise token.at.error(f"тип {name} вне переносимого профиля {self.language}")
+            raise token.at.error(f"type {name} is outside the {self.language} portable profile")
         if name == "bool" and self.language == "c" and "stdbool.h" not in self.imports:
-            raise token.at.error("для bool в C добавьте #include <stdbool.h>")
+            raise token.at.error("add #include <stdbool.h> to use bool in C")
         return TYPES[name]
 
     def expression(self, precedence: int = 1) -> ir.Expr:
@@ -411,15 +411,15 @@ class BracedParser:
         elif text in {"!", "+", "-"}:
             operand = self.expression(max(PRECEDENCE.values()) + 1)
             if self.script and text == "-" and isinstance(operand, ir.Literal) and operand.value == 0:
-                raise at.error("отрицательный ноль JavaScript вне переносимого профиля")
+                raise at.error("JavaScript negative zero is outside the portable profile")
             left = unary(at, text, operand)
         elif token.kind == "number":
             if len(text) > 1 and text.startswith("0") and text[1].isdigit():
-                raise at.error("используйте десятичные числа без ведущего нуля или префикс 0x")
+                raise at.error("use decimal numbers without leading zeros or use the 0x prefix")
             left = ir.Literal(at, int(text, 0))
         elif text in {"true", "false"}:
             if self.language == "c" and "stdbool.h" not in self.imports:
-                raise at.error("для bool в C добавьте #include <stdbool.h>")
+                raise at.error("add #include <stdbool.h> to use bool in C")
             left = ir.Literal(at, text == "true")
         elif token.kind == "string":
             left = ir.Literal(at, self.string_literal(token))
@@ -428,20 +428,20 @@ class BracedParser:
                 text += self.take().text
                 member = self.take()
                 if member.kind != "name":
-                    raise member.at.error("ожидается имя метода")
+                    raise member.at.error("expected a method name")
                 text += member.text
             if self.accept("("):
                 left = self.call_expression(at, text, self.arguments())
             else:
                 left = ir.Name(at, text)
         else:
-            raise at.error(f"неподдерживаемое выражение {text}")
+            raise at.error(f"unsupported expression {text}")
 
         while (binding := PRECEDENCE.get(self.binary_operator(self.token.text), 0)) >= precedence:
             operator_token = self.take()
             op = self.binary_operator(operator_token.text)
             if op in {"===", "!=="} and not self.script:
-                raise operator_token.at.error("строгое сравнение ===/!== доступно в JavaScript и TypeScript")
+                raise operator_token.at.error("strict equality operators === and !== are available in JavaScript and TypeScript")
             right = self.expression(binding + 1)
             if self.script and isinstance(left, ir.Literal) and isinstance(right, ir.Literal):
                 a, b = left.value, right.value
@@ -449,7 +449,7 @@ class BracedParser:
                     (op == "%" and a < 0 and b != 0 and a % b == 0)
                     or (op == "*" and ((a == 0 and b < 0) or (b == 0 and a < 0)))
                 ):
-                    raise operator_token.at.error("операция даёт отрицательный ноль JavaScript, который не переносится в int32")
+                    raise operator_token.at.error("the operation produces JavaScript negative zero, which int32 cannot represent")
             left = ir.Binary(at, self.ir_operator(op), left, right)
         if self.script and precedence == 1 and self.accept("?"):
             yes = self.expression()
@@ -459,7 +459,7 @@ class BracedParser:
 
     def string_literal(self, token: Token) -> str:
         if token.text.startswith("'") and not self.script:
-            raise token.at.error("символьные литералы вне переносимого профиля")
+            raise token.at.error("character literals are outside the portable profile")
         return string_value(token)
 
     def ir_operator(self, operator: str) -> str:
@@ -479,9 +479,9 @@ class BracedParser:
                         (a == 0 and b < 0)
                         or (name == "Math.trunc" and a * b < 0 and abs(a) < abs(b))
                     ):
-                        raise at.error("операция даёт отрицательный ноль JavaScript, который не переносится в int32")
+                        raise at.error("the operation produces JavaScript negative zero, which int32 cannot represent")
                 return ir.Binary(at, "tdiv" if name == "Math.trunc" else "fdiv", argument.left, argument.right)
-            raise at.error("ожидается Math.trunc(a / b) или Math.floor(a / b)")
+            raise at.error("expected Math.trunc(a / b) or Math.floor(a / b)")
         return ir.Call(at, name, arguments)
 
     def arguments(self) -> tuple[ir.Expr, ...]:
@@ -581,7 +581,7 @@ class BracedParser:
             if operator in {"++", "--"}:
                 return self.increment(at, name, operator)
             if operator == ":=" and not self.go:
-                raise at.error("сокращённое объявление := доступно для Go")
+                raise at.error("short declarations with := are available in Go")
             value = self.expression()
             if operator not in {"=", ":="}:
                 plain = {"/=": "floatdiv" if self.script else "tdiv", "%=": "tmod"}.get(operator, operator[0])
@@ -589,7 +589,7 @@ class BracedParser:
             return ir.Bind(at, name, value, declaration=(operator == ":="))
         expression = self.expression()
         if not isinstance(expression, ir.Call):
-            raise at.error("ожидается присваивание или вызов функции")
+            raise at.error("expected an assignment or function call")
         return self.invoke(expression)
 
     @staticmethod
@@ -626,20 +626,20 @@ class BracedParser:
             return ir.Print(at, argv, " ", "\n", "lower")
         if self.language == "java" and name in {"System.out.print", "System.out.println"}:
             if len(argv) > 1 or (not argv and name == "System.out.print"):
-                raise at.error("System.out принимает одно переносимое значение")
+                raise at.error("System.out accepts one portable value")
             return ir.Print(at, argv, "", "\n" if name.endswith("println") else "", "lower")
         if self.language == "csharp" and name in {"Console.Write", "Console.WriteLine", "System.Console.Write", "System.Console.WriteLine"}:
             newline = name.endswith("Line")
             if (name.startswith("Console") and "System" not in self.imports) or len(argv) > 1 or (not argv and not newline):
-                raise at.error("Console требует using System и принимает одно переносимое значение")
+                raise at.error("Console requires using System and accepts one portable value")
             return ir.Print(at, argv, "", "\n" if newline else "", "upper")
         if self.go and name in {"fmt.Print", "fmt.Println"}:
             if "fmt" not in self.imports or (name == "fmt.Print" and len(argv) > 1):
-                raise at.error('поддерживаются импорт "fmt", fmt.Println и fmt.Print с одним аргументом')
+                raise at.error('the "fmt" import, fmt.Println, and single-argument fmt.Print are supported')
             return ir.Print(at, argv, " ", "\n" if name.endswith("Println") else "", "lower")
         if (self.c_family and name in {"printf", "std::printf"}) or (self.go and name == "fmt.Printf"):
             if not (self.imports & {"stdio.h", "cstdio", "fmt"}):
-                raise at.error("добавьте стандартный заголовок или импорт для форматированного вывода")
+                raise at.error("add the standard header or import for formatted output")
             return formatted_print(call, c_style=self.c_family)
         return ir.Invoke(at, call)
 
@@ -648,14 +648,14 @@ class BracedParser:
         self.take("::")
         self.take("cout")
         if "iostream" not in self.imports:
-            raise at.error("для std::cout нужен #include <iostream>")
+            raise at.error("std::cout requires #include <iostream>")
         values = []
         while self.accept("<<"):
             if self.token.kind == "string" and self.token.text.startswith("'"):
                 token = self.take()
                 character = string_value(token)
                 if len(character) != 1 or not character.isascii():
-                    raise token.at.error("в std::cout поддерживается один ASCII-символ в одинарных кавычках")
+                    raise token.at.error("std::cout supports single-quoted ASCII characters")
                 value = ir.Literal(token.at, character)
             else:
                 value = self.expression()
@@ -731,7 +731,7 @@ class BracedParser:
                 token = self.take()
                 match = re.fullmatch(r"#\s*include\s*<([a-z0-9.]+)>\s*", token.text)
                 if not match or match[1] not in HEADERS:
-                    raise token.at.error("поддерживаются стандартные заголовки без макросов препроцессора")
+                    raise token.at.error("standard headers are supported without preprocessor macros")
                 self.imports.add(match[1])
         if self.go:
             self.take("package")
@@ -776,33 +776,33 @@ class BracedParser:
             if self.language == "csharp":
                 self.accept(";")
             if self.token.kind != "eof":
-                raise self.token.at.error("переносимый профиль требует один класс со статическими методами")
+                raise self.token.at.error("the portable profile requires one class with static methods")
         signatures = {function.name: function for function in functions}
         for prototype in self.prototypes:
             definition = signatures.get(prototype.name)
             if (definition is None or definition.returns != prototype.returns
                     or [p.annotation for p in prototype.parameters] != [p.annotation for p in definition.parameters]):
-                raise prototype.at.error(f"для объявления {prototype.name} нужно совпадающее определение в этом файле")
+                raise prototype.at.error(f"the declaration of {prototype.name} requires a matching definition in this file")
         main = None
         main_name = "Main" if self.language == "csharp" else "main"
         if not self.script and main_name in signatures:
             entry = signatures[main_name]
             allowed = {"int", "void"} if self.language == "csharp" else {"int"} if self.c_family else {"void"}
             if entry.parameters or entry.returns not in allowed:
-                raise entry.at.error(f"в точке входа ожидается результат {' или '.join(sorted(allowed))} и стандартная сигнатура")
+                raise entry.at.error(f"the entry point must use the standard signature and return {' or '.join(sorted(allowed))}")
             main = entry.name
         return ir.Program(self.language, tuple(functions), tuple(statements), main)
 
     def go_import(self) -> None:
         token = self.take()
         if token.text != '"fmt"':
-            raise token.at.error('переносимые программы Go поддерживают импорт "fmt" для вывода')
+            raise token.at.error('portable Go programs support the "fmt" import for output')
         self.imports.add("fmt")
 
 
 def formatted_print(call: ir.Call, *, c_style: bool, ending: str = "") -> ir.Print:
     if not call.arguments or not isinstance(call.arguments[0], ir.Literal) or not isinstance(call.arguments[0].value, str):
-        raise call.at.error("printf требует строковый литерал формата")
+        raise call.at.error("formatted output requires a string literal as the format")
     form, *arguments = call.arguments
     pattern = re.compile(r"[^%]+|%%|%[ds]")
     values, formats = [], []
@@ -810,11 +810,11 @@ def formatted_print(call: ir.Call, *, c_style: bool, ending: str = "") -> ir.Pri
     while offset < len(form.value):
         match = pattern.match(form.value, offset)
         if not match:
-            raise call.at.error("поддерживаемые форматы printf: %d, %s и %%")
+            raise call.at.error("supported format specifiers: %d, %s, and %%")
         fragment = match.group()
         if fragment in {"%d", "%s"}:
             if index >= len(arguments):
-                raise call.at.error("недостаточно аргументов printf")
+                raise call.at.error("too few arguments for the format string")
             values.append(arguments[index])
             formats.append("D" if fragment == "%d" and not c_style else fragment[1])
             index += 1
@@ -823,7 +823,7 @@ def formatted_print(call: ir.Call, *, c_style: bool, ending: str = "") -> ir.Pri
             formats.append("*")
         offset = match.end()
     if index != len(arguments):
-        raise call.at.error("лишние аргументы printf")
+        raise call.at.error("too many arguments for the format string")
     return ir.Print(call.at, tuple(values), "", ending, "numeric" if c_style else "lower", tuple(formats))
 
 
@@ -850,7 +850,7 @@ class SystemsParser(BracedParser):
         if include_void and self.rust and token.text == "(":
             self.take(")")
             return "void"
-        raise token.at.error("ожидается i32, bool или неизменяемая строка")
+        raise token.at.error("expected i32, bool, or an immutable string")
 
     def test(self) -> ir.Expr:
         if self.rust:
@@ -867,7 +867,7 @@ class SystemsParser(BracedParser):
         intrinsics = {"@divTrunc": "tdiv", "@divFloor": "fdiv", "@rem": "tmod", "@mod": "fmod"}
         if not self.rust and name in intrinsics:
             if len(arguments) != 2:
-                raise at.error(f"{name} ожидает два аргумента")
+                raise at.error(f"{name} expects two arguments")
             return ir.Binary(at, intrinsics[name], *arguments)
         return super().call_expression(at, name, arguments)
 
@@ -889,7 +889,7 @@ class SystemsParser(BracedParser):
             self.take(".")
             self.take("print")
             if "std" not in self.imports:
-                raise at.error('для std.debug.print нужен const std = @import("std");')
+                raise at.error('std.debug.print requires const std = @import("std");')
             self.take("(")
             form = self.expression()
             self.take(",")
@@ -917,7 +917,7 @@ class SystemsParser(BracedParser):
             self.take("=")
             return ir.Bind(at, name, self.expression(), annotation, declaration=True, constant=constant)
         if self.is_at("for", "++", "--"):
-            raise at.error("используйте цикл while и присваивания")
+            raise at.error("use a while loop and assignments")
         return super().simple()
 
     def function(self) -> ir.Function:
@@ -970,7 +970,7 @@ def brace_print(at: ir.Position, arguments: tuple[ir.Expr, ...], *,
     if not arguments and rust and newline:
         return ir.Print(at, (), "", "\n", "lower", stderr=stderr)
     if not arguments or not isinstance(arguments[0], ir.Literal) or not isinstance(arguments[0].value, str):
-        raise at.error("формат вывода должен быть строковым литералом")
+        raise at.error("the output format must be a string literal")
     form, *args = arguments
     values, formats = [], []
     index, offset = 0, 0
@@ -978,7 +978,7 @@ def brace_print(at: ir.Position, arguments: tuple[ir.Expr, ...], *,
     while offset < len(form.value):
         match = pattern.match(form.value, offset)
         if not match:
-            raise at.error("формат вывода вне переносимого профиля")
+            raise at.error("the output format is outside the portable profile")
         part = match.group()
         offset = match.end()
         if part in {"{{", "}}"} or not part.startswith("{"):
@@ -991,14 +991,14 @@ def brace_print(at: ir.Position, arguments: tuple[ir.Expr, ...], *,
             formats.append("*")
         elif (rust and not spec) or (not rust and spec in {"", "d", "s"}):
             if index >= len(args):
-                raise at.error("недостаточно аргументов формата")
+                raise at.error("too few arguments for the format string")
             values.append(args[index])
             formats.append({"": "*", "d": "D", "s": "s"}[spec])
             index += 1
         else:
-            raise at.error("формат вывода вне переносимого профиля")
+            raise at.error("the output format is outside the portable profile")
     if index != len(args):
-        raise at.error("лишние аргументы формата")
+        raise at.error("too many arguments for the format string")
     return ir.Print(at, tuple(values), "", "\n" if newline else "", "lower", tuple(formats), stderr=stderr)
 
 
@@ -1011,7 +1011,7 @@ class RubyParser(BracedParser):
         if token.text.startswith("'"):
             return re.sub(r"\\([\\'])", r"\1", content)
         if re.search(r"(?<!\\)#(?:\{|@|\$)", content):
-            raise token.at.error("интерполяция строк Ruby пока не поддерживается")
+            raise token.at.error("Ruby string interpolation is unsupported")
         return string_value(token)
 
     def ir_operator(self, operator: str) -> str:
@@ -1077,7 +1077,7 @@ class RubyParser(BracedParser):
                     while self.accept(","):
                         values.append(self.expression())
             if puts and len(values) > 1:
-                raise at.error("используйте отдельный puts для каждого значения")
+                raise at.error("use a separate puts call for each value")
             ending = "\n" if puts else ""
             formats = ()
             if puts and values:
@@ -1091,7 +1091,7 @@ class RubyParser(BracedParser):
         elif self.token.kind == "name" and self.items[self.index + 1].text in {"=", "+=", "-=", "*=", "/=", "%="}:
             name, operator = self.identifier().text, self.take().text
             if name in {"def", "end", "puts", "print", "exit", "next", "unless", "elsif", "nil", "do", "then"} or not name[0].islower() and name[0] != "_":
-                raise at.error("ожидается локальная переменная Ruby")
+                raise at.error("expected a Ruby local variable")
             value = self.expression()
             if operator != "=":
                 value = ir.Binary(at, self.ir_operator(operator[0]), ir.Name(at, name), value)
@@ -1103,7 +1103,7 @@ class RubyParser(BracedParser):
             elif implicit_return and self.is_at("end", ";"):
                 result = ir.Return(at, value)
             else:
-                raise at.error("ожидается присваивание, вызов или управляющая инструкция Ruby")
+                raise at.error("expected a Ruby assignment, call, or control statement")
         self.end()
         return result
 

@@ -21,7 +21,7 @@ def windows_command(source: Path, output: Path, config: Path) -> list[str]:
     library = Path(sys.base_prefix) / "libs" / f"python{major}{minor}{suffix}.lib"
     include = Path(sysconfig.get_path("include"))
     if not library.is_file() or not (include / "Python.h").is_file():
-        raise ValueError("для текущего CPython нужны Python.h и импортная библиотека .lib")
+        raise ValueError("Python.h and the import library (.lib) for this CPython installation are required")
 
     if compiler := shutil.which("cl.exe"):
         object_file = config.with_name("program.obj")
@@ -40,7 +40,7 @@ def unix_command(source: Path, output: Path, config: Path) -> list[str]:
     config_command = str(local_config) if local_config.is_file() else shutil.which(name)
     compiler = shutil.which("c++")
     if not compiler or not config_command:
-        raise ValueError(f"нужны компилятор c++ и {name} из комплекта разработки CPython")
+        raise ValueError(f"A C++ compiler and {name} from the CPython development kit are required")
 
     includes = shlex.split(subprocess.check_output([config_command, "--includes"], text=True))
     libraries = shlex.split(subprocess.check_output([config_command, "--embed", "--ldflags"], text=True))
@@ -58,21 +58,21 @@ def write_python_location(config: Path) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Собрать сгенерированный C++ файл с библиотекой CPython.")
-    parser.add_argument("source", type=Path, help="сгенерированный файл .cpp")
-    parser.add_argument("-o", "--output", type=Path, help="путь к исполняемому файлу")
+    parser = argparse.ArgumentParser(description="Build a generated C++ file against CPython.")
+    parser.add_argument("source", type=Path, help="generated .cpp file")
+    parser.add_argument("-o", "--output", type=Path, help="path to the executable")
     args = parser.parse_args()
 
     source = args.source.resolve()
     if source.suffix.lower() != ".cpp" or not source.is_file():
-        parser.error("укажите существующий файл .cpp")
+        parser.error("provide an existing .cpp file")
     suffix = ".exe" if os.name == "nt" else ""
     output = args.output or source.with_suffix(suffix)
     if suffix and not output.suffix:
         output = output.with_suffix(suffix)
     output = output.resolve()
     if output == source or (output.exists() and output.samefile(source)):
-        parser.error("исходный и выходной файлы должны различаться")
+        parser.error("the input and output files must be different")
 
     try:
         with tempfile.TemporaryDirectory(prefix=".code-translator-", dir=output.parent) as temporary:

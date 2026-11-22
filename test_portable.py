@@ -48,7 +48,7 @@ class PortableSemantics(unittest.TestCase):
         source = "bits 64\nmov eax, 6\nmov ecx, 7\nimul eax, ecx\n"
         self.assertEqual(self.run_in_python("assembly", source), ("42\n", 0))
         unsupported = self.make_source("assembly", "mov eax, [rbp - 4]")
-        with self.assertRaisesRegex(ValueError, "регистр или целое число"):
+        with self.assertRaisesRegex(ValueError, "NASM register or integer"):
             portable_parse.parse(unsupported, "assembly")
 
     def test_nasm_wraps_32_bit_register_arithmetic(self):
@@ -59,7 +59,7 @@ class PortableSemantics(unittest.TestCase):
         for expression in ("Math.trunc(-1 / 2)", "-2 % 2", "0 * -2", "Math.floor(0 / -2)"):
             with self.subTest(expression=expression):
                 source = self.make_source("javascript", f"console.log({expression});")
-                with self.assertRaisesRegex(ValueError, "отрицательный ноль"):
+                with self.assertRaisesRegex(ValueError, "negative zero"):
                     portable_parse.parse(source, "javascript")
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for this execution comparison")
@@ -96,7 +96,7 @@ class PortableSemantics(unittest.TestCase):
 
     def test_python_range_zero_step_is_reported(self):
         source = self.make_source("python", "for i in range(0, 10, 0):\n    print(i)\n")
-        with self.assertRaisesRegex(ValueError, "шаг range не может быть равен нулю"):
+        with self.assertRaisesRegex(ValueError, "range step cannot be zero"):
             portable_parse.parse(source, "python")
 
     def make_source(self, language: str, text: str) -> Path:
@@ -142,7 +142,7 @@ if (true) {
 }
 """
         source = self.make_source("javascript", text)
-        with self.assertRaisesRegex(ValueError, r"3:17: переменная value не определена"):
+        with self.assertRaisesRegex(ValueError, r"3:17: variable value is not defined"):
             portable_emit.render(portable_parse.parse(source, "javascript"), "python")
 
     def test_unsupported_mode_preserves_other_requested_output(self):
