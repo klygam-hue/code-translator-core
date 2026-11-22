@@ -1,0 +1,7 @@
+__pycache__/
+*.py[cod]
+.venv/
+*.exe
+*.pdb
+*.obj
+*.o
