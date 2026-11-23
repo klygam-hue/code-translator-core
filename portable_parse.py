@@ -44,6 +44,7 @@ class PythonParser:
         self.ranges = 0
         self.assignments = 0
         self.signatures: dict[str, ast.arguments] = {}
+        self.builtin_len = True
 
     @staticmethod
     def at(node: ast.AST) -> ir.Position:
@@ -74,6 +75,8 @@ class PythonParser:
                 return literal(at, value)
             case ast.List(elts=values):
                 return ir.IntList(at, tuple(self.expression(value) for value in values))
+            case ast.Subscript(value=target, slice=index) if not isinstance(index, ast.Slice):
+                return ir.ListAccess(at, self.expression(target), self.expression(index))
             case ast.Name(id=name):
                 return ir.Name(at, name)
             case ast.UnaryOp(op=operator, operand=operand):
@@ -101,6 +104,8 @@ class PythonParser:
                     for comparison in pairs[1:]:
                         result = ir.Binary(at, "&&", result, comparison)
                     return result
+            case ast.Call(func=ast.Name(id="len"), args=[target], keywords=[]) if self.builtin_len:
+                return ir.ListAccess(at, self.expression(target))
             case ast.Call(func=ast.Name(id=name)):
                 return self.call(node, name)
             case ast.IfExp(test=test, body=yes, orelse=no):
@@ -260,6 +265,11 @@ class PythonParser:
         functions, statements = [], []
         body = tree.body[1:] if tree.body and docstring(tree.body[0]) else tree.body
         self.signatures = {node.name: node.args for node in body if isinstance(node, ast.FunctionDef)}
+        self.builtin_len = "len" not in self.signatures and not any(
+            (isinstance(node, ast.Name) and node.id == "len" and isinstance(node.ctx, ast.Store))
+            or (isinstance(node, ast.arg) and node.arg == "len")
+            for node in ast.walk(tree)
+        )
         for node in body:
             if isinstance(node, ast.FunctionDef):
                 if statements:

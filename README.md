@@ -22,18 +22,20 @@ The translator infers the source language from the file extension. Use `--from` 
 
 | Mode | Behavior |
 | --- | --- |
-| `auto` | Selects an available generator. Python → C++ can generate code that uses CPython or embed the original script. C → Zig uses Zig when installed. |
+| `auto` | Selects an available generator. For Python → JavaScript, TypeScript, and Ruby, a compatibility launcher is generated when the portable profile cannot translate the script. Python → C++ can generate code that uses CPython or embed the script. C → Zig uses Zig when installed. |
 | `portable` | Generates code from the shared typed representation. |
 | `strict` | Requires Python → C++ to generate code that uses CPython directly. Other language pairs use the portable profile. |
-| `compatible` | Embeds the original script for Python → C++. Running the result requires CPython and the original script's dependencies. |
+| `compatible` | Embeds the original script for Python → C++, JavaScript, TypeScript, or Ruby. Running the result requires Python and the script's dependencies. |
 
 To build C++ output that uses CPython, run `python build_cpp.py translated.cpp`. This requires the headers and libraries for the current CPython installation and a C++17 compiler. To use `zig translate-c`, install Zig and add it to `PATH`.
+
+JavaScript and TypeScript launchers require Node.js. Ruby launchers require Ruby. Both look for `python3` on Unix and `python` on Windows. Set `CODE_TRANSLATOR_PYTHON` to select a different Python executable. Keep the launcher beside the source script's local modules and other files. Translation embeds the uploaded program without running it. Launching the generated file runs the embedded program.
 
 ## Supported profile
 
 The shared core handles individual files with scalar functions, variables, conditionals, loops, and console output. It supports `int32` integers, booleans, and strings. Capabilities vary by language pair. General collections, asynchronous code, floating-point arithmetic, and external libraries are outside the shared profile. Diagnostics include a source position when available.
 
-- Python functions in the same file support keyword arguments and scalar defaults. Python integer lists support literals, aliases, `append`, returning a list, and printing to JavaScript, TypeScript, Ruby, Java, and C#. List indexing, slicing, and comprehensions are outside this profile.
+- Python functions in the same file support keyword arguments and scalar defaults. Python integer lists support literals, aliases, `append`, returning lists, printing, `len`, and integer indexing, including negative indices, for JavaScript, TypeScript, Ruby, Java, and C#. Slicing and comprehensions require compatibility mode.
 - SQLite supports scalar `SELECT` expressions without database table references.
 - NASM accepts straight-line arithmetic on 32-bit registers. To build the generated Linux x86-64 program, run `nasm -f elf64 translated.asm`, followed by `cc translated.o -o translated`.
 

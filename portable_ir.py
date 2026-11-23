@@ -35,6 +35,12 @@ class IntList(Expr):
 
 
 @dataclass(frozen=True)
+class ListAccess(Expr):
+    target: Expr
+    index: Expr | None = None
+
+
+@dataclass(frozen=True)
 class Name(Expr):
     name: str
 
@@ -296,6 +302,11 @@ class FunctionAnalysis:
                 for value in values:
                     self.expression(value, assigned).constrain({"int"}, value.at)
                 result.constrain({"int_list"}, node.at)
+            case ListAccess(target=target, index=index):
+                self.expression(target, assigned).constrain({"int_list"}, target.at)
+                if index is not None:
+                    self.expression(index, assigned).constrain({"int"}, index.at)
+                result.constrain({"int"}, node.at)
             case Name(name=name):
                 variable = self.lookup(name)
                 if variable is None or variable not in assigned:

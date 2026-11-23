@@ -11,6 +11,7 @@ import tempfile
 import portable_emit
 import portable_ir
 import portable_parse
+import python_compat
 import python_to_cpp
 from translation import Translation
 import zig_tool
@@ -43,16 +44,21 @@ def language(argument: str) -> str:
 def directions() -> None:
     for source in EXTENSIONS:
         print(f"{source:12} → {', '.join(EXTENSIONS)}")
-    print("Python → C++ supports CPython compatibility. C → Zig uses Zig when available.")
+    print("Python compatibility is available for C++, JavaScript, TypeScript, and Ruby. C → Zig uses Zig when available.")
 
 
-def translate_outputs(source: Path, original: str, targets: list[str], mode: str) -> list[Translation]:
+def translate_outputs(source: Path, original: str, targets: list[str], mode: str, *,
+                      display_name: str | None = None) -> list[Translation]:
     analysis = None
     results = []
     for target in targets:
         pair = original, target
         if original == target and original in EXTENSIONS:
             results.append(Translation(source.read_bytes()))
+            continue
+        allow_launcher = original == "python" and target in python_compat.TARGETS
+        if allow_launcher and mode == "compatible":
+            results.append(python_compat.render(source, target, display_name=display_name))
             continue
         if pair == ("python", "cpp") and mode != "portable":
             results.append(python_to_cpp.translate(source, mode))
@@ -63,12 +69,18 @@ def translate_outputs(source: Path, original: str, targets: list[str], mode: str
                 results.append(result)
                 continue
         if mode == "compatible":
-            raise ValueError("compatible mode is available for Python → C++")
+            raise ValueError("compatible mode is available for Python → C++, JavaScript, TypeScript, and Ruby")
         if original not in EXTENSIONS or target not in EXTENSIONS:
             raise ValueError(f"{original} → {target} is unavailable in {mode} mode. See --list")
-        if analysis is None:
-            analysis = portable_ir.Analysis(portable_parse.parse(source, original)).run()
-        results.append(Translation(portable_emit.render_analysis(analysis, target)))
+        try:
+            if analysis is None:
+                analysis = portable_ir.Analysis(portable_parse.parse(source, original)).run()
+            translated = Translation(portable_emit.render_analysis(analysis, target))
+        except ValueError as error:
+            if not allow_launcher or mode != "auto":
+                raise
+            translated = python_compat.render(source, target, display_name=display_name, fallback_reason=str(error))
+        results.append(translated)
     return results
 
 
@@ -113,7 +125,9 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     staged.write_text(translation.code, encoding="utf-8", newline="\n")
                 staged.replace(output)
-            if translation.fallback_reason:
+            if translation.requires_python:
+                print(f"{output}: the output runs the embedded script and requires Python.", file=sys.stderr)
+            elif translation.fallback_reason:
                 print(f"{args.input}:{translation.fallback_reason}. Using CPython compatibility mode.", file=sys.stderr)
             print(output)
     except SyntaxError as error:

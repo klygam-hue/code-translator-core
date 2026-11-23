@@ -2,6 +2,7 @@
 
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
+import os
 from pathlib import Path
 import shutil
 import sqlite3
@@ -16,6 +17,43 @@ import translator
 
 
 class PortableSemantics(unittest.TestCase):
+    def test_python_list_length_and_negative_index_translate(self):
+        code = "numbers = [6, 7, 42]\nprint(len(numbers), numbers[-1], numbers[0])\n"
+        self.assertEqual(self.run_in_python("python", code), ("3 42 6\n", 0))
+        source = self.make_source("python", code)
+        result, = translator.translate_outputs(source, "python", ["javascript"], "auto")
+        self.assertFalse(result.requires_python)
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is required for this execution comparison")
+    def test_python_compatibility_preserves_arguments_streams_and_exit_status(self):
+        code = (
+            "import sys\n"
+            "from helper import multiply\n"
+            "values = [multiply(n) for n in range(3)]\n"
+            "print(input(), *values, sys.argv[1], sep='|')\n"
+            "print('diagnostic', file=sys.stderr)\n"
+            "sys.exit(7)\n"
+        )
+        source = self.make_source("python", code)
+        source.with_name("helper.py").write_text("def multiply(n): return n * 7\n", encoding="utf-8")
+        result, = translator.translate_outputs(source, "python", ["javascript"], "auto")
+        self.assertTrue(result.requires_python)
+        self.assertIsNotNone(result.fallback_reason)
+        target = source.with_suffix(".mjs")
+        target.write_text(result.code, encoding="utf-8")
+        env = dict(os.environ, CODE_TRANSLATOR_PYTHON=sys.executable, PYTHONIOENCODING="utf-8")
+        original = subprocess.run([sys.executable, source, "quoted arg"], input="input\n", text=True,
+                                  capture_output=True, timeout=10, env=env)
+        translated = subprocess.run(["node", target, "quoted arg"], input="input\n", text=True,
+                                    capture_output=True, timeout=10, env=env)
+        self.assertEqual((translated.stdout, translated.stderr, translated.returncode),
+                         (original.stdout, original.stderr, original.returncode))
+
+    def test_compatibility_does_not_emit_an_invalid_python_script(self):
+        source = self.make_source("python", "def missing(:\n")
+        with self.assertRaises(SyntaxError):
+            translator.translate_outputs(source, "python", ["javascript"], "auto")
+
     @unittest.skipUnless(shutil.which("node"), "Node.js is required for this execution comparison")
     def test_python_lists_and_keyword_arguments_translate_to_javascript(self):
         source = self.make_source("python", (
@@ -168,7 +206,7 @@ if (true) {
         existing = source.with_suffix(".cpp")
         existing.write_text("previous", encoding="utf-8")
         with redirect_stderr(StringIO()):
-            status = translator.main([str(source), "--mode", "compatible", "--to", "cpp", "--to", "js"])
+            status = translator.main([str(source), "--mode", "compatible", "--to", "cpp", "--to", "go"])
         self.assertEqual(status, 1)
         self.assertEqual(existing.read_text(encoding="utf-8"), "previous")
 

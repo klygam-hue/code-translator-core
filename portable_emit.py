@@ -208,6 +208,31 @@ def ct_div(a, b, floor, remainder)
 end
 """
 
+NODE_LIST_INDEX = """\
+function ct_list_at(values, index) {
+    const adjusted = index < 0 ? values.length + index : index;
+    if (adjusted < 0 || adjusted >= values.length) throw new RangeError("list index out of range");
+    return values[adjusted];
+}
+"""
+
+LIST_INDEX = {
+    "javascript": NODE_LIST_INDEX,
+    "typescript": NODE_LIST_INDEX.replace(
+        "ct_list_at(values, index)", "ct_list_at(values: number[], index: number): number", 1,
+    ),
+    "java": """\
+private static int ct_list_at(java.util.ArrayList<Integer> values, int index) {
+    return values.get(index < 0 ? values.size() + index : index);
+}
+""",
+    "csharp": """\
+private static int ct_list_at(System.Collections.Generic.List<int> values, int index) {
+    return values[index < 0 ? values.Count + index : index];
+}
+""",
+}
+
 
 def safe_name(name: str) -> str:
     parts = [char if char.isascii() and (char.isalnum() or char == "_") else f"_u{ord(char):x}_" for char in name]
@@ -340,6 +365,20 @@ class Emitter:
                 if self.target == "csharp":
                     return f"new System.Collections.Generic.List<int> {{ {contents} }}"
                 return f"[{contents}]"
+            case ir.ListAccess(target=target, index=index):
+                value = self.expression(target)
+                if index is None:
+                    if self.python:
+                        return f"len({value})"
+                    length = {"ruby": "size", "java": "size()", "csharp": "Count"}.get(self.target, "length")
+                    return f"({value}).{length}"
+                offset = self.expression(index)
+                if self.python:
+                    return f"({value})[{offset}]"
+                if self.ruby:
+                    return f"({value}).fetch({offset})"
+                self.needs.add("list_index")
+                return f"ct_list_at({value}, {offset})"
             case ir.Name():
                 return self.variables[self.analysis.references[id(node)]]
             case ir.Call(name=name, arguments=arguments):
@@ -752,6 +791,8 @@ class Emitter:
             helpers.append(CHECKED_INT[self.target])
         if "division" in self.needs:
             helpers.append(DIVISION[self.target])
+        if "list_index" in self.needs:
+            helpers.append(LIST_INDEX[self.target])
         if "bool_text" in self.needs:
             helpers.append("func ct_bool(value bool, yes, no string) string {\n    if value {\n        return yes\n    }\n    return no\n}\n")
         if self.class_language:
